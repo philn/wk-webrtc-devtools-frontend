@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<input id="file-picker" type="file"/>
+<div id="peer-connections"/>
+<script src="https://webrtc.github.io/samples/src/js/third_party/graph.js"></script>
+<script type="module">
+ const bitrateSeries = {};
+ const bitrateGraphs = {};
+ const framerateSeries = {};
+ const framerateGraphs = {};
+ const qpSeries = {};
+ const qpGraphs = {};
+ let peerConnectionContainers = {};
+ let lastRecvReports = {};
+ let lastSentReports = {};
+ let outboundRTPStartDate = null;
+ let inboundRTPStartDate = null;
+
+ function createPeerConnectionContainer(peerConnectionId) {
+     if (peerConnectionId in peerConnectionContainers)
+         return;
+
+     const container = document.createElement('details');
+     container.open = true;
+
+     const summary = document.createElement('summary');
+     summary.innerText = 'Connection: ' + peerConnectionId;
+     container.appendChild(summary);
+
+     peerConnectionContainers[peerConnectionId] = container;
+
+     document.getElementById('peer-connections').appendChild(container);
+     document.getElementById('peer-connections').appendChild(document.createElement('br'));
+
+     createEventContainer(peerConnectionId);
+     createGraphs(peerConnectionId, true);
+     createGraphs(peerConnectionId, false);
+ }
+
+ function createEventContainer(peerConnectionId) {
+     const peerConnectionContainer = peerConnectionContainers[peerConnectionId];
+     const container = document.createElement('details');
+     container.open = false;
+
+     const summary = document.createElement('summary');
+     summary.innerText = 'Events: ' + peerConnectionId;
+     container.appendChild(summary);
+
+     const wrapper = document.createElement('div');
+     wrapper.id = peerConnectionId + '-events';
+     container.appendChild(wrapper);
+
+     peerConnectionContainer.appendChild(container);
+ }
+
+ function base64ToBytes(base64) {
+     const binString = atob(base64);
+     return Uint8Array.from(binString, (m) => m.codePointAt(0));
+ }
+
+ function logEvent(pcId, event) {
+     const eventContainer = document.createElement('div');
+
+     const timestamp = document.createElement('b');
+     timestamp.innerText = new Date(event.timestamp).toString() + ' ';
+     eventContainer.appendChild(timestamp);
+
+     const message = document.createElement('span');
+     message.innerText = event.message;
+     eventContainer.appendChild(message);
+
+     if (event.payload) {
+         const decodedPayload = new TextDecoder().decode(base64ToBytes(event.payload));
+         const wrapper = document.createElement('pre');
+         wrapper.innerText = decodedPayload;
+         eventContainer.appendChild(wrapper);
+     }
+     const container = document.getElementById(pcId + '-events');
+     container.appendChild(eventContainer);
+ }
+
+ function createGraph(container, id, title, isRemote) {
+     const canvas = document.createElement('canvas');
+     const canvasId = id + title + 'Canvas';
+     canvas.id = canvasId;
+     canvas.title = title;
+
+     const titleTag = document.createElement('span');
+     titleTag.innerText = title;
+     container.appendChild(titleTag);
+     container.appendChild(canvas);
+
+     const graph = new TimelineGraphView(id + 'Container', canvasId);
+     graph.updateEndDate();
+
+     const series = isRemote ? new TimelineDataSeries() : new Map();
+     return [series, graph];
+ }
+
+ function createGraphs(peerConnectionId, isRemote) {
+     const id = isRemote ? 'remote' : 'local';
+     const uniqueId = peerConnectionId + ' ' + id;
+     const peerConnectionContainer = peerConnectionContainers[peerConnectionId];
+
+     const detailsContainer = document.createElement('details');
+     detailsContainer.open = true;
+
+     const summary = document.createElement('summary');
+     summary.innerText = id;
+     detailsContainer.appendChild(summary);
+
+     const wrapper = document.createElement('div');
+     wrapper.id = id + 'Container';
+     wrapper.style.display = 'inline-flex';
+     detailsContainer.appendChild(wrapper);
+     peerConnectionContainer.appendChild(detailsContainer);
+
+     const bitrateGraph = createGraph(wrapper, uniqueId, 'Bitrate', isRemote);
+     bitrateSeries[uniqueId] = bitrateGraph[0];
+     bitrateGraphs[uniqueId] = bitrateGraph[1];
+
+     const framerateGraph = createGraph(wrapper, uniqueId, 'Framerate', isRemote);
+     framerateSeries[uniqueId] = framerateGraph[0];
+     framerateGraphs[uniqueId] = framerateGraph[1];
+
+     const qpGraph = createGraph(wrapper, uniqueId, 'qp', isRemote);
+     qpSeries[uniqueId] = qpGraph[0];
+     qpGraphs[uniqueId] = qpGraph[1];
+ }
+
+ function bigIntToUint(big) {
+     // WTF.
+     return Number(BigInt.asUintN(64, big).toString());
+ }
+
+ function getBigUintValue(report, name) {
+     if (report[name])
+         return BigInt(report[name]);
+
+     // GStreamer case, not using camelCase but camel-case, and storing values in a $biguint object.
+     const key = name.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`);
+     if (report[key])
+         return report[key]['$biguint'];
+
+     return 0n;
+ }
+
+ function drawOutboundRTP(pcId, report) {
+     if (report.kind != "video")
+         return;
+
+     const localId = pcId + ' local';
+     const now = report.timestamp;
+     if (!outboundRTPStartDate) {
+         outboundRTPStartDate = new Date(now);
+         bitrateGraphs[localId].setDateRange(outboundRTPStartDate, outboundRTPStartDate);
+         framerateGraphs[localId].setDateRange(outboundRTPStartDate, outboundRTPStartDate);
+         qpGraphs[localId].setDateRange(outboundRTPStartDate, outboundRTPStartDate);
+     }
+
+     if (!lastSentReports[pcId]) {
+         lastSentReports[pcId] = report;
+         return;
+     }
+
+     const lastReport = lastSentReports[pcId];
+     const graphName = localId;
+     const bytes = getBigUintValue(report, 'bytesSent');
+     const previousBytesSent = getBigUintValue(lastReport, 'bytesSent');
+     const frames = getBigUintValue(report, 'framesEncoded');
+     const previousFramesEncoded = getBigUintValue(lastReport, 'framesEncoded');
+     const ssrc = report.ssrc;
+
+     // Calculate bitrate
+     const bitrate = 8000n * (bytes - previousBytesSent) / BigInt(Math.round(now - lastReport.timestamp));
+     if (!bitrateSeries[graphName].has(ssrc)) {
+         const series = new TimelineDataSeries();
+         bitrateSeries[graphName].set(ssrc, series);
+     }
+
+     if (bitrate >= 0n)
+         bitrateSeries[graphName].get(ssrc).addPoint(now, bigIntToUint(bitrate));
+
+     // Calculate framerate.
+     const framerate = 1000n * (frames - previousFramesEncoded) / BigInt(Math.round(now - lastReport.timestamp));
+     if (!framerateSeries[graphName].has(ssrc)) {
+         const series = new TimelineDataSeries();
+         framerateSeries[graphName].set(ssrc, series);
+     }
+     if (framerate >= 0)
+         framerateSeries[graphName].get(ssrc).addPoint(now, bigIntToUint(framerate));
+
+     // Calculate qp-per-frame.
+     // FIXME: No qpSum stat in GstWebRTC.
+     if (report.qpSum) {
+         const qp = (report.qpSum - lastReport.qpSum) / (report.framesEncoded - lastReport.framesEncoded);
+         if (!qpSeries[graphName].has(ssrc)) {
+             const series = new TimelineDataSeries();
+             qpSeries[graphName].set(ssrc, series);
+         }
+         qpSeries[graphName].get(ssrc).addPoint(now, qp);
+     }
+
+     lastSentReports[pcId] = report;
+
+     bitrateGraphs[localId].setDataSeries(Array.from(bitrateSeries[localId].values()));
+     framerateGraphs[localId].setDataSeries(Array.from(framerateSeries[localId].values()));
+     qpGraphs[localId].setDataSeries(Array.from(qpSeries[localId].values()));
+
+     let localEndDate = new Date(now);
+     bitrateGraphs[localId].updateEndDate(localEndDate);
+     framerateGraphs[localId].updateEndDate(localEndDate);
+     qpGraphs[localId].updateEndDate(localEndDate);
+ }
+
+ function drawInboundRTP(pcId, report) {
+     if (report.kind != "video")
+         return;
+
+     const remoteId = pcId + ' remote';
+     const now = report.timestamp;
+     if (!inboundRTPStartDate) {
+         inboundRTPStartDate = new Date(now);
+         bitrateGraphs[remoteId].setDateRange(inboundRTPStartDate, inboundRTPStartDate);
+         framerateGraphs[remoteId].setDateRange(inboundRTPStartDate, inboundRTPStartDate);
+         qpGraphs[remoteId].setDateRange(inboundRTPStartDate, inboundRTPStartDate);
+     }
+
+     if (!lastRecvReports[pcId]) {
+         lastRecvReports[pcId] = report;
+         return;
+     }
+
+     const lastReport = lastRecvReports[pcId];
+     const bytes = getBigUintValue(report, 'bytesReceived');
+     let previousBytesReceived = getBigUintValue(lastReport, 'bytesReceived');
+     const frames = getBigUintValue(report, 'framesDecoded');
+     const previousFramesDecoded = getBigUintValue(lastReport, 'framesDecoded');
+     let graphName = remoteId;
+
+     if (!bitrateSeries[graphName])
+         return;
+
+     // Calculate bitrate.
+     const bitrate = 8000n * (bytes - previousBytesReceived) / BigInt(Math.round(now - (lastReport.timestamp)));
+
+     bitrateSeries[graphName].addPoint(now, bigIntToUint(bitrate));
+     bitrateGraphs[graphName].setDataSeries([bitrateSeries[graphName]]);
+     bitrateGraphs[graphName].updateEndDate();
+
+     // Calculate framerate.
+     const framerate = 1000n * (frames - previousFramesDecoded) / BigInt(Math.round(now - lastReport.timestamp));
+     framerateSeries[graphName].addPoint(now, bigIntToUint(framerate));
+     framerateGraphs[graphName].setDataSeries([framerateSeries[graphName]]);
+     framerateGraphs[graphName].updateEndDate();
+
+     // Calculate qp-per-frame.
+     // FIXME: No qpSum stat in GstWebRTC.
+     if (report.qpSum) {
+         const qp = (report.qpSum - lastReport.qpSum) / (report.framesDecoded - lastReport.framesDecoded);
+         qpSeries[graphName].addPoint(now, qp);
+         qpGraphs[graphName].setDataSeries([qpSeries[graphName]]);
+         qpGraphs[graphName].updateEndDate();
+     }
+
+     lastRecvReports[pcId] = report;
+
+     let remoteEndDate = new Date(now);
+     bitrateGraphs[remoteId].updateEndDate(remoteEndDate);
+     framerateGraphs[remoteId].updateEndDate(remoteEndDate);
+     qpGraphs[remoteId].updateEndDate(remoteEndDate);
+ }
+
+ function reviver(key, value) {
+     if (key == '$biguint')
+         return BigInt(value);
+     return value;
+ }
+
+ function processLine(line) {
+     const json = JSON.parse(line, reviver);
+     const pcId = json["peer-connection"];
+     if (!peerConnectionContainers[pcId])
+         createPeerConnectionContainer(pcId);
+
+     const eventType = json["type"];
+     let event = json["event"];
+     if (eventType == "event") {
+         const timestamp = json["timestamp"] / 1000;
+         event["timestamp"] = timestamp;
+         logEvent(pcId, event);
+     } else {
+         const timestamp = event["timestamp"] / 1000;
+         event["timestamp"] = timestamp;
+         const statsEventType = event["type"];
+         if (statsEventType == 'outbound-rtp')
+             drawOutboundRTP(pcId, event);
+
+         if (statsEventType == 'inbound-rtp')
+             drawInboundRTP(pcId, event);
+     }
+ }
+
+ async function loadFile(file) {
+     document.getElementById('peer-connections').innerHTML = '';
+     lastRecvReports = {};
+     lastSentReports = {};
+     outboundRTPStartDate = null;
+     inboundRTPStartDate = null;
+
+     const jsonData = await fetch(file.name);
+     const data = await jsonData.text();
+     for await (const line of data.split(/\r?\n/)) {
+         if (line === "")
+             continue;
+         processLine(line);
+     }
+ }
+ const filePicker = document.getElementById("file-picker");
+ filePicker.onchange = async (e) => {
+     await loadFile(e.target.files[0]);
+ };
+</script>
