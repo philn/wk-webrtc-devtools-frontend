@@ -11,5 +11,5 @@ python -m http.server
 
 Then select one of the sample JSON provided in this repository.
 
-The graphs currently show stats about the outbound video RTP stats. More will
-come, this is a proof-of-concept.
+The graphs currently show stats about the inbound and outbound video RTP stats.
+More will come, this is a proof-of-concept.
