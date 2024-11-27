@@ -284,13 +284,11 @@
 
      const eventType = json["type"];
      let event = json["event"];
+     const timestamp = json["timestamp"] / 1000;
+     event["timestamp"] = timestamp;
      if (eventType == "event") {
-         const timestamp = json["timestamp"] / 1000;
-         event["timestamp"] = timestamp;
          logEvent(pcId, event);
      } else {
-         const timestamp = event["timestamp"] / 1000;
-         event["timestamp"] = timestamp;
          const statsEventType = event["type"];
          if (statsEventType == 'outbound-rtp')
              drawOutboundRTP(pcId, event);
