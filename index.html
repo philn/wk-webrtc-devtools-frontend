@@ -305,12 +305,18 @@
      outboundRTPStartDate = null;
      inboundRTPStartDate = null;
 
-     const jsonData = await fetch(file.name);
-     const data = await jsonData.text();
-     for await (const line of data.split(/\r?\n/)) {
-         if (line === "")
-             continue;
-         processLine(line);
+     var reader = new FileReader();
+     reader.readAsText(file, 'UTF-8');
+
+     reader.onload = readerEvent => {
+         var data = readerEvent.target.result;
+         var lines = data.split(/\r?\n/);
+         for (let i = 0; i < lines.length; i++)  {
+             let line = lines[i];
+             if (line === "")
+                 continue;
+             processLine(line);
+         }
      }
  }
  const filePicker = document.getElementById("file-picker");
