@@ -61,7 +61,7 @@
      const eventContainer = document.createElement('div');
 
      const timestamp = document.createElement('b');
-     timestamp.innerText = new Date(event.timestamp).toString() + ' ';
+     timestamp.innerText = new Date(event.timestamp).toISOString() + ' ';
      eventContainer.appendChild(timestamp);
 
      const message = document.createElement('span');
